@@ -1,19 +1,19 @@
 /*
-* == BSD2 LICENSE ==
-* Copyright (c) 2020, Tidepool Project
-*
-* This program is free software; you can redistribute it and/or modify it under
-* the terms of the associated License, which is identical to the BSD 2-Clause
-* License as published by the Open Source Initiative at opensource.org.
-*
-* This program is distributed in the hope that it will be useful, but WITHOUT
-* ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
-* FOR A PARTICULAR PURPOSE. See the License for more details.
-*
-* You should have received a copy of the License along with this program; if
-* not, you can obtain one from Tidepool Project at tidepool.org.
-* == BSD2 LICENSE ==
-*/
+ * == BSD2 LICENSE ==
+ * Copyright (c) 2020, Tidepool Project
+ *
+ * This program is free software; you can redistribute it and/or modify it under
+ * the terms of the associated License, which is identical to the BSD 2-Clause
+ * License as published by the Open Source Initiative at opensource.org.
+ *
+ * This program is distributed in the hope that it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+ * FOR A PARTICULAR PURPOSE. See the License for more details.
+ *
+ * You should have received a copy of the License along with this program; if
+ * not, you can obtain one from Tidepool Project at tidepool.org.
+ * == BSD2 LICENSE ==
+ */
 const H_CLK = 120000000;
 const C_CLK = 48000000;
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -79,114 +79,118 @@ function FTDIConvertBaudrate(baud) {
 }
 
 export default class ftdi extends EventTarget {
-  constructor(device, options) {
-    super();
-    const self = this;
+    constructor(device, options) {
+        super();
+        const self = this;
 
-    (async () => {
-      if (device == null) {
-        throw new Error('Could not find device');
-      }
+        (async () => {
+            if (device == null) {
+                throw new Error('Could not find device');
+            }
 
-      await device.open();
-      console.log('Opened:', device.opened);
+            await device.open();
+            console.log('Opened:', device.opened);
 
-      if (device.configuration === null) {
-        console.log('selectConfiguration');
-        await device.selectConfiguration(1);
-      }
-      await device.claimInterface(0);
-      await device.selectConfiguration(1);
-      await device.selectAlternateInterface(0, 0);
+            if (device.configuration === null) {
+                console.log('selectConfiguration');
+                await device.selectConfiguration(1);
+            }
+            await device.claimInterface(0);
+            await device.selectConfiguration(1);
+            await device.selectAlternateInterface(0, 0);
 
-      const [baud, value, index] = FTDIConvertBaudrate(options.baudRate);
-      console.log('Setting baud rate to', baud);
-      const result = await device.controlTransferOut({
-          requestType: 'vendor',
-          recipient: 'device',
-          request: 3,
-          value ,
-          index,
-      });
+            const [baud, value, index] = FTDIConvertBaudrate(options.baudRate);
+            console.log('Setting baud rate to', baud);
+            const result = await device.controlTransferOut({
+                requestType: 'vendor',
+                recipient: 'device',
+                request: 3,
+                value,
+                index,
+            });
 
-      self.device = device;
-      self.isClosing = false;
-      this.device.transferIn(1, 64); // flush buffer
-      self.readLoop();
-      self.dispatchEvent(new Event('ready'));
-    })().catch((error) => {
-      console.log('Error during FTDI setup:', error);
-      self.dispatchEvent(new CustomEvent('error', {
-        detail: error,
-      }));
-    });
-  }
+            self.device = device;
+            self.isClosing = false;
+            this.device.transferIn(1, 64); // flush buffer
+            self.readLoop();
+            self.dispatchEvent(new Event('ready'));
+        })().catch((error) => {
+            console.log('Error during FTDI setup:', error);
+            self.dispatchEvent(new CustomEvent('error', {
+                detail: error,
+            }));
+        });
+    }
 
-  async readLoop() {
-    let result;
+    async readLoop() {
+        let result;
 
-    try {
-      result = await this.device.transferIn(1, 64);
-    } catch (error) {
-      if (error.message.indexOf('LIBUSB_TRANSFER_NO_DEVICE')) {
-        console.log('Device disconnected');
-      } else {
-        console.log('Error reading data:', error);
-      }
+        try {
+            result = await this.device.transferIn(1, 64);
+        } catch (error) {
+            if (error.message.indexOf('LIBUSB_TRANSFER_NO_DEVICE')) {
+                console.log('Device disconnected');
+                this.isClosing = true; // flag this so we don't keep hitting this error
+                this.dispatchEvent(new Event('disconnected'));
+            } else {
+                console.log('Error reading data:', error);
+            }
+        }
+        ;
+
+        if (result && result.data && result.data.byteLength && result.data.byteLength > 2) {
+            console.log(`Received ${result.data.byteLength - 2} byte(s).`);
+            const uint8buffer = new Uint8Array(result.data.buffer);
+            this.dispatchEvent(new CustomEvent('data', {
+                detail: uint8buffer.slice(2),
+            }));
+        }
+
+        if (!this.isClosing && this.device.opened) {
+            this.readLoop();
+        }
     };
 
-    if (result && result.data && result.data.byteLength && result.data.byteLength > 2) {
-      console.log(`Received ${result.data.byteLength - 2} byte(s).`);
-      const uint8buffer = new Uint8Array(result.data.buffer);
-      this.dispatchEvent(new CustomEvent('data', {
-        detail: uint8buffer.slice(2),
-      }));
+    async read() {
+        const {data: {buffer: dataBuffer, byteLength: bytesRead}} = await this.device.transferIn(1, 64);
+        const uint8buffer = new Uint8Array(dataBuffer);
+
+        if (bytesRead === 2) {
+            return this.read();
+        }
+
+        return {bytesRead: bytesRead - 2, data: uint8buffer.slice(2)};
     }
 
-    if (!this.isClosing && this.device.opened) {
-      this.readLoop();
-    }
-  };
-
-  async read() {
-    const {data: {buffer: dataBuffer, byteLength: bytesRead}} = await this.device.transferIn(1, 64);
-    const uint8buffer = new Uint8Array(dataBuffer);
-
-    if (bytesRead === 2) {
-      return this.read();
+    async writeAsync(buffer) {
+        return await this.device.transferOut(2, buffer);
     }
 
-    return { bytesRead: bytesRead-2, data: uint8buffer.slice(2) };
-  }
-
-  async writeAsync(buffer) {
-    return await this.device.transferOut(2, buffer);
-  }
-
-  write(data, cb) {
-    this.writeAsync(data).then(() => {
-      cb();
-    }, err => cb(err));
-  }
-
-  async closeAsync() {
-    this.isClosing = true;
-    try {
-      console.log('Sending EOT');
-      await this.writeAsync([0x04]);
-      await delay(2000); // wait for send/receive to complete
-      await this.device.releaseInterface(0);
-      await this.device.close();
-      console.log('Closed device');
-    } catch(err) {
-      console.log('Error:', err);
+    write(data, cb) {
+        this.writeAsync(data).then(() => {
+            cb();
+        }, err => cb(err));
     }
-  }
 
-  close(cb) {
-    (async () => {
-      await this.closeAsync();
-      return cb();
-    })();
-  }
+    async closeAsync() {
+        this.isClosing = true;
+        this.dispatchEvent(new Event('disconnected'));
+        try {
+            console.log('Sending EOT');
+            await this.writeAsync([0x04]);
+            await delay(2000); // wait for send/receive to complete
+            await this.device.releaseInterface(0);
+            await this.device.close();
+            console.log('Closed device');
+        } catch (err) {
+            console.log('Error:', err);
+        }
+    }
+
+    close(cb) {
+        (async () => {
+            await this.closeAsync();
+            return cb();
+        })();
+    }
 }

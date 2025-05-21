@@ -18,6 +18,17 @@ const H_CLK = 120000000;
 const C_CLK = 48000000;
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
+const MODEM_CONTROL_DTR_ENABLE = 0x0101;
+const MODEM_CONTROL_DTR_DISABLE = 0x0100;
+const MODEM_CONTROL_RTS_ENABLE = 0x0202;
+const MODEM_CONTROL_RTS_DISABLE = 0x0200;
+
+const RESET_REQUEST = 0;
+const MODEM_CONTROL_REQUEST = 1;
+
+const RESET_ALL = 0;
+
+
 function FTDIToClkbits(baud, clk, clkDiv) {
     const fracCode = [0, 3, 2, 4, 1, 5, 6, 7];
     let bestBaud = 0;
@@ -79,6 +90,9 @@ function FTDIConvertBaudrate(baud) {
 }
 
 export default class ftdi extends EventTarget {
+    dtr = true
+    rts = true
+
     constructor(device, options) {
         super();
         const self = this;
@@ -111,6 +125,29 @@ export default class ftdi extends EventTarget {
 
             self.device = device;
             self.isClosing = false;
+
+            // reset all
+            const resetResult = await device.controlTransferOut({
+                requestType: 'vendor',
+                recipient: 'device',
+                request: RESET_REQUEST,
+                value: RESET_ALL,
+                index: 1 // ?? port+1
+            })
+            console.debug("reset result: ", resetResult)
+
+            // set dtr, rts
+            const controlLineResult = await device.controlTransferOut({
+                requestType: 'vendor',
+                recipient: 'device',
+                request: MODEM_CONTROL_REQUEST,
+                value: (this.dtr ? MODEM_CONTROL_DTR_ENABLE : MODEM_CONTROL_DTR_DISABLE) |
+                    (this.rts ? MODEM_CONTROL_RTS_ENABLE : MODEM_CONTROL_RTS_DISABLE),
+                index: 1, // ?? port+1
+            })
+            console.debug("set control lines result: ", controlLineResult)
+
+
             this.device.transferIn(1, 64); // flush buffer
             self.readLoop();
             self.dispatchEvent(new Event('ready'));
